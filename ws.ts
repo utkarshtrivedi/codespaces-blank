@@ -1,88 +1,61 @@
-class SubscriptionDigester {
-    private arrayToMerge: any[] = [];
-    private mergedArray: any[] = [];
-    private intervalId: NodeJS.Timeout | null = null;
-    private isMerging: boolean = false;
-    private webSocketManager: WebSocketManager;
-    private wsUrl: string;
-    private loginMessage: string;
+class WebSocketManager {
+    private socket: WebSocket | null = null;
+    private connectionPromise: Promise<WebSocket> | null = null;
+    private isAuthenticated: boolean = false;
+    private retryCount: number = 0;
+    private readonly maxRetries: number = 5;
 
-    constructor(webSocketManager: WebSocketManager, wsUrl: string, loginMessage: string) {
-        this.webSocketManager = webSocketManager;
-        this.wsUrl = wsUrl;
-        this.loginMessage = loginMessage;
-    }
-
-    public addItemAndStartDigestion(item: any): void {
-        this.arrayToMerge.push(item);
-
-        if (this.intervalId) {
-            return; // Interval is already running, do nothing
+    public ensureConnection(url: string, loginMessage: string): Promise<WebSocket> {
+        if (this.connectionPromise) {
+            return this.connectionPromise;
         }
 
-        // Start the interval if it's not already running
-        this.intervalId = setInterval(() => {
-            this.performMergeAndSend();
+        this.connectionPromise = new Promise((resolve, reject) => {
+            const attemptConnection = () => {
+                this.socket = new WebSocket(url);
 
-            if (this.arrayToMerge.length === 0 && this.mergedArray.length === 0) {
-                // Stop the interval if there's nothing left to merge and send
-                this.stopInterval();
-            }
-        }, 1000);
-    }
+                this.socket.onopen = () => {
+                    this.retryCount = 0; // Reset retry count on successful connection
+                    this.socket?.send(loginMessage);
+                };
 
-    private stopInterval(): void {
-        if (this.intervalId) {
-            clearInterval(this.intervalId);
-            this.intervalId = null;
-        }
-    }
+                this.socket.onerror = (err) => {
+                    this.retryCount++;
+                    if (this.retryCount < this.maxRetries) {
+                        console.log(`Retrying connection (${this.retryCount}/${this.maxRetries})...`);
+                        setTimeout(attemptConnection, 1000); // Retry the connection after 1 second
+                    } else {
+                        reject(new Error(`Failed to connect after ${this.maxRetries} attempts`));
+                        this.connectionPromise = null; // Clear the promise on error
+                        this.retryCount = 0; // Reset retry count after max retries reached
+                    }
+                };
 
-    private performMergeAndSend(): void {
-        if (this.isMerging) {
-            return; // Avoid overlapping merge and send operations
-        }
+                this.socket.onmessage = (event) => {
+                    if (event.data === "login:complete") {
+                        this.isAuthenticated = true;
+                        resolve(this.socket as WebSocket);
+                        this.connectionPromise = null; // Clear the promise once resolved
+                    }
+                };
 
-        this.isMerging = true;
+                this.socket.onclose = () => {
+                    this.socket = null;
+                    this.isAuthenticated = false;
+                };
+            };
 
-        this.performMerge();
-
-        this.webSocketManager.ensureConnection(this.wsUrl, this.loginMessage)
-            .then(() => {
-                this.performSend();
-            })
-            .catch(err => {
-                console.error('Failed to connect to WebSocket:', err);
-            })
-            .finally(() => {
-                this.isMerging = false;
-            });
-    }
-
-    private performMerge(): void {
-        if (this.arrayToMerge.length === 0) {
-            return; // No items to merge
-        }
-
-        console.log('Performing merge operation...');
-        this.mergedArray.push(...this.arrayToMerge);
-        this.arrayToMerge.length = 0; // Clear the arrayToMerge after merging
-    }
-
-    private performSend(): void {
-        if (this.mergedArray.length === 0) {
-            return; // No items to send
-        }
-
-        console.log('Performing send operation with merged array:', this.mergedArray);
-
-        // Send each item in the merged array over the WebSocket connection
-        this.mergedArray.forEach(item => {
-            const message = JSON.stringify(item);
-            this.webSocketManager.sendMessage(message);
+            attemptConnection();
         });
 
-        // Clear the merged array after sending
-        this.mergedArray.length = 0;
+        return this.connectionPromise;
+    }
+
+    public sendMessage(message: string): void {
+        if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+            this.socket.send(message);
+        } else {
+            console.error('WebSocket is not connected or open');
+        }
     }
 }
