@@ -1,114 +1,3 @@
-const pacote = require('pacote');
-const semver = require('semver');
-const fs = require('fs-extra');
-const tar = require('tar');
-const path = require('path');
-const os = require('os');
-const npmConf = require('npm-conf');
-
-async function copyFilesMatchingSrcStructure(pkgDir, srcPath, destPath) {
-  const relativePaths = await listAllRelativeFiles(srcPath);
-
-  for (const relPath of relativePaths) {
-    const fromPath = path.join(pkgDir, relPath);
-    const toPath = path.join(destPath, relPath);
-    const existsInPkg = await fs.pathExists(fromPath);
-
-    if (existsInPkg) {
-      await fs.ensureDir(path.dirname(toPath));
-      await fs.copy(fromPath, toPath, { overwrite: true });
-    }
-  }
-}
-
-async function listAllRelativeFiles(baseDir) {
-  const results = [];
-
-  async function walk(dir) {
-    const entries = await fs.readdir(dir);
-    for (const entry of entries) {
-      const fullPath = path.join(dir, entry);
-      const stat = await fs.stat(fullPath);
-      if (stat.isDirectory()) {
-        await walk(fullPath);
-      } else {
-        results.push(path.relative(baseDir, fullPath));
-      }
-    }
-  }
-
-  if (await fs.pathExists(baseDir)) {
-    await walk(baseDir);
-  }
-
-  return results;
-}
-async function copyMatchingFiles(fromDir, toDir) {
-  const entries = await fs.readdir(fromDir);
-  for (const entry of entries) {
-    const fromPath = path.join(fromDir, entry);
-    const toPath = path.join(toDir, entry);
-    const existsInDest = await fs.pathExists(toPath);
-
-    if (existsInDest) {
-      const stats = await fs.stat(fromPath);
-      if (stats.isDirectory()) {
-        await copyMatchingFiles(fromPath, toPath);
-      } else {
-        await fs.copy(fromPath, toPath, { overwrite: true });
-      }
-    }
-  }
-}
-
-// ---- CONFIG ----
-/** 
- * **Change this array to configure your tasks**
- */
-const tasks = [
-  {
-    pkgName: '@angular/core',
-    srcPath: './local-source',
-    destPath: './output-angular-core',
-    count: 5
-  },
-  {
-    pkgName: 'lodash',
-    srcPath: './local-lodash-snippet',
-    destPath: './output-lodash',
-    count: 3
-  }
-];
-// ---- END CONFIG ----
-
-function safeTempName(pkgName, version) {
-  return pkgName.replace(/[\/@]/g, '_') + '-' + version + '-';
-}
-
-function getAuthOptionsFromNpmrc(registry) {
-  const conf = npmConf();
-  const opts = conf.toJSON();
-  const regUrl = registry || conf.get('registry');
-  const regKey = regUrl.replace(/^https?:/, '');
-
-  const username = conf.get(`${regKey}:username`);
-  const passwordEncoded = conf.get(`${regKey}:_password`);
-  const alwaysAuth = conf.get(`${regKey}:always-auth`);
-
-  const headers = {};
-  if (username && passwordEncoded) {
-    const decodedPassword = Buffer.from(passwordEncoded, 'base64').toString('utf8');
-    const token = Buffer.from(`${username}:${decodedPassword}`).toString('base64');
-    headers['authorization'] = `Basic ${token}`;
-  }
-
-  return {
-    registry: regUrl,
-    headers,
-    alwaysAuth
-  };
-}
-
 async function processTask({ pkgName, count, srcPath, destPath }) {
   const authOpts = getAuthOptionsFromNpmrc();
 
@@ -132,37 +21,20 @@ async function processTask({ pkgName, count, srcPath, destPath }) {
     console.log(`  Downloading ${pkgName}@${version}...`);
     await pacote.extract(`${pkgName}@${version}`, tempDir, authOpts);
 
-    console.log(`  Merging ${pkgName}@${version} into ${destPath}`);
-    await fs.copy(tempDir, destPath, {
-      overwrite: true,
-      errorOnExist: false
-    });
+    const absSrcFromPkg = path.join(tempDir, srcPath);
+
+    if (await fs.pathExists(absSrcFromPkg)) {
+      console.log(`  Merging ${pkgName}@${version}:${srcPath} into ${destPath}`);
+      await fs.copy(absSrcFromPkg, destPath, {
+        overwrite: true,
+        errorOnExist: false
+      });
+    } else {
+      console.warn(`  Skipping ${pkgName}@${version}: "${srcPath}" not found`);
+    }
 
     await fs.remove(tempDir);
   }
 
-  if (srcPath && await fs.pathExists(srcPath)) {
-    console.log(`  Copying srcPath "${srcPath}" into ${destPath}`);
-    await fs.copy(srcPath, destPath, {
-      overwrite: true,
-      errorOnExist: false
-    });
-  } else {
-    console.warn(`  Skipping srcPath copy: "${srcPath}" does not exist.`);
-  }
-
-  console.log(`✓ Done with ${pkgName}\n`);
+  console.log(`✓ Done with ${pkgName} → ${destPath}\n`);
 }
-
-// **ENTRY POINT (NO CLI PARAMS)**
-(async () => {
-  for (const task of tasks) {
-    try {
-      await processTask(task);
-    } catch (err) {
-      console.error(`Error processing ${task.pkgName}:`, err.message || err);
-    }
-  }
-
-  console.log('\nAll tasks completed.');
-})();
