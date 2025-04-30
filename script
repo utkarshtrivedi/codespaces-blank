@@ -6,6 +6,26 @@ const path = require('path');
 const os = require('os');
 const npmConf = require('npm-conf');
 
+// ---- CONFIG ----
+/** 
+ * **Change this array to configure your tasks**
+ */
+const tasks = [
+  {
+    pkgName: '@angular/core',
+    srcPath: './local-source',
+    destPath: './output-angular-core',
+    count: 5
+  },
+  {
+    pkgName: 'lodash',
+    srcPath: './local-lodash-snippet',
+    destPath: './output-lodash',
+    count: 3
+  }
+];
+// ---- END CONFIG ----
+
 function safeTempName(pkgName, version) {
   return pkgName.replace(/[\/@]/g, '_') + '-' + version + '-';
 }
@@ -14,8 +34,6 @@ function getAuthOptionsFromNpmrc(registry) {
   const conf = npmConf();
   const opts = conf.toJSON();
   const regUrl = registry || conf.get('registry');
-
-  // Normalize registry key (npm-conf stores them like '//registry.npmjs.org/')
   const regKey = regUrl.replace(/^https?:/, '');
 
   const username = conf.get(`${regKey}:username`);
@@ -36,29 +54,31 @@ function getAuthOptionsFromNpmrc(registry) {
   };
 }
 
-async function mergePackageHistory(pkgName, pkgHistoryCount, destDir, registry) {
-  const authOpts = getAuthOptionsFromNpmrc(registry);
+async function processTask({ pkgName, count, srcPath, destPath }) {
+  const authOpts = getAuthOptionsFromNpmrc();
+
+  console.log(`\n--- Processing ${pkgName} ---`);
 
   const manifest = await pacote.packument(pkgName, authOpts);
   const allVersions = Object.keys(manifest.versions)
     .filter(v => !semver.prerelease(v))
     .sort(semver.compare);
 
-  const selectedVersions = allVersions.slice(-pkgHistoryCount);
+  const selectedVersions = allVersions.slice(-count);
 
-  console.log(`Found ${allVersions.length} GA versions. Processing last ${pkgHistoryCount}:`);
+  console.log(`Found ${allVersions.length} GA versions. Using last ${count}:`);
   console.log(selectedVersions.join(', '));
 
-  await fs.ensureDir(destDir);
+  await fs.ensureDir(destPath);
 
   for (const version of selectedVersions) {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), safeTempName(pkgName, version)));
 
-    console.log(`Downloading ${pkgName}@${version}...`);
+    console.log(`  Downloading ${pkgName}@${version}...`);
     await pacote.extract(`${pkgName}@${version}`, tempDir, authOpts);
 
-    console.log(`Merging ${pkgName}@${version} into ${destDir}...`);
-    await fs.copy(tempDir, destDir, {
+    console.log(`  Merging ${pkgName}@${version} into ${destPath}`);
+    await fs.copy(tempDir, destPath, {
       overwrite: true,
       errorOnExist: false
     });
@@ -66,31 +86,28 @@ async function mergePackageHistory(pkgName, pkgHistoryCount, destDir, registry) 
     await fs.remove(tempDir);
   }
 
-  console.log(`Done! Merged ${pkgHistoryCount} latest GA versions of ${pkgName} into ${destDir}`);
-}
-
-
-if (require.main === module) {
-  const args = process.argv.slice(2);
-  const [pkgName, pkgHistoryCountStr, destDir] = args.filter(arg => !arg.startsWith('--'));
-  const registryArg = args.find(arg => arg.startsWith('--registry='));
-  const registry = registryArg ? registryArg.split('=')[1] : null;
-
-  if (!pkgName || !pkgHistoryCountStr || !destDir) {
-    console.error('Usage: node merge-npm-history.js <package-name> <history-count> <destination-path> [--registry=https://custom-registry]');
-    process.exit(1);
-  }
-
-  const pkgHistoryCount = parseInt(pkgHistoryCountStr, 10);
-  if (isNaN(pkgHistoryCount) || pkgHistoryCount <= 0) {
-    console.error('Error: history-count must be a positive number.');
-    process.exit(1);
-  }
-
-  mergePackageHistory(pkgName, pkgHistoryCount, destDir, registry)
-    .catch(err => {
-      console.error('Error:', err);
-      process.exit(1);
+  if (srcPath && await fs.pathExists(srcPath)) {
+    console.log(`  Copying srcPath "${srcPath}" into ${destPath}`);
+    await fs.copy(srcPath, destPath, {
+      overwrite: true,
+      errorOnExist: false
     });
+  } else {
+    console.warn(`  Skipping srcPath copy: "${srcPath}" does not exist.`);
+  }
+
+  console.log(`✓ Done with ${pkgName}\n`);
 }
 
+// **ENTRY POINT (NO CLI PARAMS)**
+(async () => {
+  for (const task of tasks) {
+    try {
+      await processTask(task);
+    } catch (err) {
+      console.error(`Error processing ${task.pkgName}:`, err.message || err);
+    }
+  }
+
+  console.log('\nAll tasks completed.');
+})();
