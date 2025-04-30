@@ -1,0 +1,67 @@
+const pacote = require('pacote');
+const semver = require('semver');
+const fs = require('fs-extra');
+const tar = require('tar');
+const path = require('path');
+const os = require('os');
+
+async function mergePackageHistory(pkgName, pkgHistoryCount, destDir) {
+  // 1. Get all versions
+  const manifest = await pacote.packument(pkgName);
+  const allVersions = Object.keys(manifest.versions)
+    .filter(v => !semver.prerelease(v)) // GA only
+    .sort(semver.compare); // Ascending order
+
+  const selectedVersions = allVersions.slice(-pkgHistoryCount);
+
+  console.log(`Found ${allVersions.length} GA versions. Processing last ${pkgHistoryCount}:`);
+  console.log(selectedVersions.join(', '));
+
+  // Prepare destination
+  await fs.ensureDir(destDir);
+
+  for (const version of selectedVersions) {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), `${pkgName.replace('/', '_')}-${version}-`));
+    const tarballData = await pacote.tarball.file(pkgName + '@' + version);
+
+    console.log(`Extracting ${pkgName}@${version}...`);
+
+    // Extract to tempDir
+    await tar.x({
+      file: tarballData,
+      cwd: tempDir,
+      strip: 1 // remove package/ root folder
+    });
+
+    // Copy files to destination (later ones overwrite earlier)
+    await fs.copy(tempDir, destDir, {
+      overwrite: true
+    });
+
+    await fs.remove(tempDir);
+  }
+
+  console.log(`Done! Files from ${pkgHistoryCount} latest GA versions of ${pkgName} merged into ${destDir}`);
+}
+
+// --- CLI usage ---
+if (require.main === module) {
+  const [,, pkgName, pkgHistoryCountStr, destDir] = process.argv;
+
+  if (!pkgName || !pkgHistoryCountStr || !destDir) {
+    console.error('Usage: node merge-npm-history.js <package-name> <history-count> <destination-path>');
+    process.exit(1);
+  }
+
+  const pkgHistoryCount = parseInt(pkgHistoryCountStr, 10);
+  if (isNaN(pkgHistoryCount) || pkgHistoryCount <= 0) {
+    console.error('Error: history-count must be a positive number.');
+    process.exit(1);
+  }
+
+  mergePackageHistory(pkgName, pkgHistoryCount, destDir)
+    .catch(err => {
+      console.error('Error:', err);
+      process.exit(1);
+    });
+}
