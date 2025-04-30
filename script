@@ -6,6 +6,25 @@ const path = require('path');
 const os = require('os');
 const npmConf = require('npm-conf');
 
+
+async function copyMatchingFiles(fromDir, toDir) {
+  const entries = await fs.readdir(fromDir);
+  for (const entry of entries) {
+    const fromPath = path.join(fromDir, entry);
+    const toPath = path.join(toDir, entry);
+    const existsInDest = await fs.pathExists(toPath);
+
+    if (existsInDest) {
+      const stats = await fs.stat(fromPath);
+      if (stats.isDirectory()) {
+        await copyMatchingFiles(fromPath, toPath);
+      } else {
+        await fs.copy(fromPath, toPath, { overwrite: true });
+      }
+    }
+  }
+}
+
 // ---- CONFIG ----
 /** 
  * **Change this array to configure your tasks**
