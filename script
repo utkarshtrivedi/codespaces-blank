@@ -5,43 +5,39 @@ const tar = require('tar');
 const path = require('path');
 const os = require('os');
 
+function safeTempName(pkgName, version) {
+  return pkgName.replace(/[\/@]/g, '_') + '-' + version + '-';
+}
+
 async function mergePackageHistory(pkgName, pkgHistoryCount, destDir) {
-  // 1. Get all versions
   const manifest = await pacote.packument(pkgName);
   const allVersions = Object.keys(manifest.versions)
-    .filter(v => !semver.prerelease(v)) // GA only
-    .sort(semver.compare); // Ascending order
+    .filter(v => !semver.prerelease(v)) // GA versions only
+    .sort(semver.compare); // Ascending
 
   const selectedVersions = allVersions.slice(-pkgHistoryCount);
 
   console.log(`Found ${allVersions.length} GA versions. Processing last ${pkgHistoryCount}:`);
   console.log(selectedVersions.join(', '));
 
-  // Prepare destination
   await fs.ensureDir(destDir);
 
   for (const version of selectedVersions) {
-    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), `${pkgName.replace('/', '_')}-${version}-`));
-    const tarballData = await pacote.tarball.file(pkgName + '@' + version);
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), safeTempName(pkgName, version)));
 
-    console.log(`Extracting ${pkgName}@${version}...`);
+    console.log(`Downloading ${pkgName}@${version}...`);
+    await pacote.extract(`${pkgName}@${version}`, tempDir);
 
-    // Extract to tempDir
-    await tar.x({
-      file: tarballData,
-      cwd: tempDir,
-      strip: 1 // remove package/ root folder
-    });
-
-    // Copy files to destination (later ones overwrite earlier)
+    console.log(`Merging ${pkgName}@${version} into ${destDir}...`);
     await fs.copy(tempDir, destDir, {
-      overwrite: true
+      overwrite: true,
+      errorOnExist: false
     });
 
     await fs.remove(tempDir);
   }
 
-  console.log(`Done! Files from ${pkgHistoryCount} latest GA versions of ${pkgName} merged into ${destDir}`);
+  console.log(`Done! Merged ${pkgHistoryCount} latest GA versions of ${pkgName} into ${destDir}`);
 }
 
 // --- CLI usage ---
@@ -50,6 +46,7 @@ if (require.main === module) {
 
   if (!pkgName || !pkgHistoryCountStr || !destDir) {
     console.error('Usage: node merge-npm-history.js <package-name> <history-count> <destination-path>');
+    console.error('Example: node merge-npm-history.js @angular/core 5 ./output');
     process.exit(1);
   }
 
