@@ -6,7 +6,43 @@ const path = require('path');
 const os = require('os');
 const npmConf = require('npm-conf');
 
+async function copyFilesMatchingSrcStructure(pkgDir, srcPath, destPath) {
+  const relativePaths = await listAllRelativeFiles(srcPath);
 
+  for (const relPath of relativePaths) {
+    const fromPath = path.join(pkgDir, relPath);
+    const toPath = path.join(destPath, relPath);
+    const existsInPkg = await fs.pathExists(fromPath);
+
+    if (existsInPkg) {
+      await fs.ensureDir(path.dirname(toPath));
+      await fs.copy(fromPath, toPath, { overwrite: true });
+    }
+  }
+}
+
+async function listAllRelativeFiles(baseDir) {
+  const results = [];
+
+  async function walk(dir) {
+    const entries = await fs.readdir(dir);
+    for (const entry of entries) {
+      const fullPath = path.join(dir, entry);
+      const stat = await fs.stat(fullPath);
+      if (stat.isDirectory()) {
+        await walk(fullPath);
+      } else {
+        results.push(path.relative(baseDir, fullPath));
+      }
+    }
+  }
+
+  if (await fs.pathExists(baseDir)) {
+    await walk(baseDir);
+  }
+
+  return results;
+}
 async function copyMatchingFiles(fromDir, toDir) {
   const entries = await fs.readdir(fromDir);
   for (const entry of entries) {
