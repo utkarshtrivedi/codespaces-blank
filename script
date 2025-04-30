@@ -10,17 +10,36 @@ function safeTempName(pkgName, version) {
   return pkgName.replace(/[\/@]/g, '_') + '-' + version + '-';
 }
 
-async function mergePackageHistory(pkgName, pkgHistoryCount, destDir, registry, token) {
+function getAuthOptionsFromNpmrc(registry) {
   const conf = npmConf();
-  const defaultRegistry = conf.get('registry');
+  const opts = conf.toJSON();
+  const regUrl = registry || conf.get('registry');
 
-  const pacoteOpts = {
-    registry: registry || defaultRegistry,
-    ...token && { 'headers': { authorization: `Bearer ${token}` } },
-    ...conf.toJSON()
+  // Normalize registry key (npm-conf stores them like '//registry.npmjs.org/')
+  const regKey = regUrl.replace(/^https?:/, '');
+
+  const username = conf.get(`${regKey}:username`);
+  const passwordEncoded = conf.get(`${regKey}:_password`);
+  const alwaysAuth = conf.get(`${regKey}:always-auth`);
+
+  const headers = {};
+  if (username && passwordEncoded) {
+    const decodedPassword = Buffer.from(passwordEncoded, 'base64').toString('utf8');
+    const token = Buffer.from(`${username}:${decodedPassword}`).toString('base64');
+    headers['authorization'] = `Basic ${token}`;
+  }
+
+  return {
+    registry: regUrl,
+    headers,
+    alwaysAuth
   };
+}
 
-  const manifest = await pacote.packument(pkgName, pacoteOpts);
+async function mergePackageHistory(pkgName, pkgHistoryCount, destDir, registry) {
+  const authOpts = getAuthOptionsFromNpmrc(registry);
+
+  const manifest = await pacote.packument(pkgName, authOpts);
   const allVersions = Object.keys(manifest.versions)
     .filter(v => !semver.prerelease(v))
     .sort(semver.compare);
@@ -36,7 +55,7 @@ async function mergePackageHistory(pkgName, pkgHistoryCount, destDir, registry, 
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), safeTempName(pkgName, version)));
 
     console.log(`Downloading ${pkgName}@${version}...`);
-    await pacote.extract(`${pkgName}@${version}`, tempDir, pacoteOpts);
+    await pacote.extract(`${pkgName}@${version}`, tempDir, authOpts);
 
     console.log(`Merging ${pkgName}@${version} into ${destDir}...`);
     await fs.copy(tempDir, destDir, {
@@ -50,17 +69,15 @@ async function mergePackageHistory(pkgName, pkgHistoryCount, destDir, registry, 
   console.log(`Done! Merged ${pkgHistoryCount} latest GA versions of ${pkgName} into ${destDir}`);
 }
 
+
 if (require.main === module) {
   const args = process.argv.slice(2);
   const [pkgName, pkgHistoryCountStr, destDir] = args.filter(arg => !arg.startsWith('--'));
   const registryArg = args.find(arg => arg.startsWith('--registry='));
-  const tokenArg = args.find(arg => arg.startsWith('--token='));
-
   const registry = registryArg ? registryArg.split('=')[1] : null;
-  const token = tokenArg ? tokenArg.split('=')[1] : null;
 
   if (!pkgName || !pkgHistoryCountStr || !destDir) {
-    console.error('Usage: node merge-npm-history.js <package-name> <history-count> <destination-path> [--registry=https://...registry] [--token=your_npm_token]');
+    console.error('Usage: node merge-npm-history.js <package-name> <history-count> <destination-path> [--registry=https://custom-registry]');
     process.exit(1);
   }
 
@@ -70,11 +87,10 @@ if (require.main === module) {
     process.exit(1);
   }
 
-  mergePackageHistory(pkgName, pkgHistoryCount, destDir, registry, token)
+  mergePackageHistory(pkgName, pkgHistoryCount, destDir, registry)
     .catch(err => {
       console.error('Error:', err);
       process.exit(1);
     });
 }
-
 
