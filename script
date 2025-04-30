@@ -49,3 +49,32 @@ async function mergePackageHistory(pkgName, pkgHistoryCount, destDir, registry, 
 
   console.log(`Done! Merged ${pkgHistoryCount} latest GA versions of ${pkgName} into ${destDir}`);
 }
+
+if (require.main === module) {
+  const args = process.argv.slice(2);
+  const [pkgName, pkgHistoryCountStr, destDir] = args.filter(arg => !arg.startsWith('--'));
+  const registryArg = args.find(arg => arg.startsWith('--registry='));
+  const tokenArg = args.find(arg => arg.startsWith('--token='));
+
+  const registry = registryArg ? registryArg.split('=')[1] : null;
+  const token = tokenArg ? tokenArg.split('=')[1] : null;
+
+  if (!pkgName || !pkgHistoryCountStr || !destDir) {
+    console.error('Usage: node merge-npm-history.js <package-name> <history-count> <destination-path> [--registry=https://...registry] [--token=your_npm_token]');
+    process.exit(1);
+  }
+
+  const pkgHistoryCount = parseInt(pkgHistoryCountStr, 10);
+  if (isNaN(pkgHistoryCount) || pkgHistoryCount <= 0) {
+    console.error('Error: history-count must be a positive number.');
+    process.exit(1);
+  }
+
+  mergePackageHistory(pkgName, pkgHistoryCount, destDir, registry, token)
+    .catch(err => {
+      console.error('Error:', err);
+      process.exit(1);
+    });
+}
+
+
