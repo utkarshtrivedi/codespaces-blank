@@ -4,16 +4,26 @@ const fs = require('fs-extra');
 const tar = require('tar');
 const path = require('path');
 const os = require('os');
+const npmConf = require('npm-conf');
 
 function safeTempName(pkgName, version) {
   return pkgName.replace(/[\/@]/g, '_') + '-' + version + '-';
 }
 
-async function mergePackageHistory(pkgName, pkgHistoryCount, destDir) {
-  const manifest = await pacote.packument(pkgName);
+async function mergePackageHistory(pkgName, pkgHistoryCount, destDir, registry, token) {
+  const conf = npmConf();
+  const defaultRegistry = conf.get('registry');
+
+  const pacoteOpts = {
+    registry: registry || defaultRegistry,
+    ...token && { 'headers': { authorization: `Bearer ${token}` } },
+    ...conf.toJSON()
+  };
+
+  const manifest = await pacote.packument(pkgName, pacoteOpts);
   const allVersions = Object.keys(manifest.versions)
-    .filter(v => !semver.prerelease(v)) // GA versions only
-    .sort(semver.compare); // Ascending
+    .filter(v => !semver.prerelease(v))
+    .sort(semver.compare);
 
   const selectedVersions = allVersions.slice(-pkgHistoryCount);
 
@@ -26,7 +36,7 @@ async function mergePackageHistory(pkgName, pkgHistoryCount, destDir) {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), safeTempName(pkgName, version)));
 
     console.log(`Downloading ${pkgName}@${version}...`);
-    await pacote.extract(`${pkgName}@${version}`, tempDir);
+    await pacote.extract(`${pkgName}@${version}`, tempDir, pacoteOpts);
 
     console.log(`Merging ${pkgName}@${version} into ${destDir}...`);
     await fs.copy(tempDir, destDir, {
@@ -38,27 +48,4 @@ async function mergePackageHistory(pkgName, pkgHistoryCount, destDir) {
   }
 
   console.log(`Done! Merged ${pkgHistoryCount} latest GA versions of ${pkgName} into ${destDir}`);
-}
-
-// --- CLI usage ---
-if (require.main === module) {
-  const [,, pkgName, pkgHistoryCountStr, destDir] = process.argv;
-
-  if (!pkgName || !pkgHistoryCountStr || !destDir) {
-    console.error('Usage: node merge-npm-history.js <package-name> <history-count> <destination-path>');
-    console.error('Example: node merge-npm-history.js @angular/core 5 ./output');
-    process.exit(1);
-  }
-
-  const pkgHistoryCount = parseInt(pkgHistoryCountStr, 10);
-  if (isNaN(pkgHistoryCount) || pkgHistoryCount <= 0) {
-    console.error('Error: history-count must be a positive number.');
-    process.exit(1);
-  }
-
-  mergePackageHistory(pkgName, pkgHistoryCount, destDir)
-    .catch(err => {
-      console.error('Error:', err);
-      process.exit(1);
-    });
 }
