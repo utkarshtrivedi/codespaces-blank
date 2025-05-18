@@ -1,0 +1,112 @@
+export class AccountSelectorService {
+  private accountList: Account[] = [];
+  private currentAccount: Account | null = null;
+  private subscribers: ((account: Account) => void)[] = [];
+  private boundElement: HTMLElement | null = null;
+  private broadcast = new BroadcastChannel('account-selector');
+
+  private readonly ACCOUNT_CHANGED = 'ACCOUNT_CHANGED';
+
+  constructor(
+    private messageBus: MessageBus,
+    private httpClient: HttpClient
+  ) {
+    // Listen to messages from other tabs
+    this.broadcast.onmessage = (event) => {
+      const { type, payload } = event.data || {};
+      if (type === this.ACCOUNT_CHANGED) {
+        this.applyExternalAccountChange(payload.newAccountId);
+      }
+    };
+  }
+
+  private getSSRSelectedAccountId(): string | null {
+    return document.querySelector('meta[name="selected-account-id"]')?.getAttribute('content') || null;
+  }
+
+  initWithAccounts(accountList: Account[]) {
+    this.accountList = accountList;
+    const ssrId = this.getSSRSelectedAccountId();
+    const match = accountList.find(acc => acc.id === ssrId);
+    this.currentAccount = match || accountList[0] || null;
+
+    if (this.boundElement) {
+      this.setElementData(this.boundElement);
+    }
+  }
+
+  getCurrentAccount(): Account | null {
+    return this.currentAccount;
+  }
+
+  getAccounts(): Account[] {
+    return this.accountList;
+  }
+
+  bindFn = (element: HTMLElement) => {
+    this.boundElement = element;
+    if (this.accountList.length && this.currentAccount) {
+      this.setElementData(element);
+    }
+
+    element.addEventListener('change', async (e: CustomEvent) => {
+      const newAccount: Account = e.detail;
+      await this.handleAccountChange(newAccount);
+    });
+  };
+
+  private setElementData(element: HTMLElement) {
+    element.setAttribute('data', JSON.stringify({
+      accounts: this.accountList,
+      selectedAccount: this.currentAccount
+    }));
+  }
+
+  onAccountChange(callback: (account: Account) => void) {
+    this.subscribers.push(callback);
+  }
+
+  private async handleAccountChange(newAccount: Account) {
+    if (!this.currentAccount || this.currentAccount.id === newAccount.id) return;
+
+    try {
+      await this.httpClient.post('/api/session/account', { accountId: newAccount.id });
+
+      const previous = this.currentAccount;
+      this.currentAccount = newAccount;
+
+      const event: AccountChangeEvent = {
+        newAccountId: newAccount.id,
+        previousAccountId: previous.id,
+      };
+
+      this.messageBus.publish(this.ACCOUNT_CHANGED, event);
+      this.broadcast.postMessage({ type: this.ACCOUNT_CHANGED, payload: event });
+      this.subscribers.forEach(cb => cb(newAccount));
+    } catch (err) {
+      console.error('Failed to update backend session', err);
+    }
+  }
+
+  private applyExternalAccountChange(newAccountId: string) {
+    if (this.currentAccount?.id === newAccountId) return;
+
+    const found = this.accountList.find(a => a.id === newAccountId);
+    if (found) {
+      const previous = this.currentAccount;
+      this.currentAccount = found;
+
+      if (this.boundElement) {
+        this.setElementData(this.boundElement);
+      }
+
+      const event: AccountChangeEvent = {
+        newAccountId: found.id,
+        previousAccountId: previous?.id || '',
+      };
+
+      this.messageBus.publish(this.ACCOUNT_CHANGED, event);
+      this.subscribers.forEach(cb => cb(found));
+    }
+  }
+}
